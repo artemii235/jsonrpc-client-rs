@@ -232,6 +232,28 @@ where
     }
 }
 
+pub fn call_method_v1<T, P, R>(
+    transport: &mut T,
+    method: String,
+    params: P,
+) -> RpcRequest<R, T::Future>
+where
+    T: Transport,
+    P: serde::Serialize,
+    R: serde::de::DeserializeOwned + Send + 'static,
+{
+    let id = Id::Num(transport.get_next_id());
+    trace!("Serializing call to method \"{}\" with id {:?}", method, id);
+    let request_serialization_result = serialize_request_v1(id.clone(), method, params)
+        .chain_err(|| ErrorKind::SerializeError);
+    match request_serialization_result {
+        Err(e) => RpcRequest(Err(Some(e))),
+        Ok(request_raw) => {
+            let transport_future = transport.send(request_raw);
+            RpcRequest(Ok(InnerRpcRequest::new(transport_future, id)))
+        }
+    }
+}
 
 /// Creates a JSON-RPC 2.0 request to the given method with the given parameters.
 fn serialize_request<P>(
@@ -250,6 +272,29 @@ where
     };
     let method_call = MethodCall {
         jsonrpc: Some(Version::V2),
+        method,
+        params: serialized_params,
+        id,
+    };
+    serde_json::to_vec(&method_call)
+}
+
+fn serialize_request_v1<P>(
+    id: Id,
+    method: String,
+    params: P,
+) -> ::std::result::Result<Vec<u8>, serde_json::error::Error>
+where
+    P: serde::Serialize,
+{
+    let serialized_params = match serde_json::to_value(params)? {
+        JsonValue::Null => None,
+        JsonValue::Array(vec) => Some(Params::Array(vec)),
+        JsonValue::Object(obj) => Some(Params::Map(obj)),
+        value => Some(Params::Array(vec![value])),
+    };
+    let method_call = MethodCall {
+        jsonrpc: Some(Version::V1),
         method,
         params: serialized_params,
         id,
